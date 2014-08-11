@@ -218,20 +218,16 @@ def convert_to_jira(base_uri, login, password, limit=nil)
       bb.tasks(p['context']['projectId']) do |t|
         break if limit and issue_count >= limit
 
-        parser = HTMLToConfluenceParser.new
-        parser.feed(t['desc'])
-        converted_description = parser.to_wiki_markup
-
         followers = bb.fetch_ticket_followers(t['id'], p['context']['projectId'])
 
         issue = {
                 'key' => "#{key}-#{t['relativeId']}",
                 'externalId' => t['relativeId'],
                 'priority' => t['priority']['name'],
-                'description' => converted_description,
+                'description' => convert_markup(t['desc']),
                 'status' => t['status']['name'],
                 'reporter' => t['opener']['shortName'],
-                'labels' => t['ticketLabels'].map {|l| l['name']},
+                'labels' => t['ticketLabels'].map {|l| l['name'].gsub(' ', '_')},
                 'watchers' => followers.map {|f| f['shortName']},
                 'issueType' => select_issue_type_by_labels(t['ticketLabels']), # There are no ticket types in DoBamBam
                 'resolution' => is_resolved?(t) ? 'Resolved' : '',
@@ -269,13 +265,9 @@ def convert_to_jira(base_uri, login, password, limit=nil)
           }
           u.keys.each do |k|
             if k == 'comment'
-              parser = HTMLToConfluenceParser.new
-              parser.feed(u[k])
-              converted_comment = parser.to_wiki_markup
-
               add_nonexistent_user(u['owner'], users, result['users'])
               issue['comments'].append({
-                'body' => converted_comment,
+                'body' => convert_markup(u[k]),
                 'author' => u['owner']['shortName'],
                 'created' => convert_timestamp_to_jira_time(u['created'])
               })
@@ -360,8 +352,8 @@ def convert_to_jira(base_uri, login, password, limit=nil)
               up['items'].append({
                                     "fieldType" => "jira",
                                     "field" => "labels",
-                                    "from" => u[k]['old'].map {|l| l['name']},
-                                    "to" => u[k]['new'].map {|l| l['name']},
+                                    "from" => (u[k]['old'].map {|l| l['name'].gsub(' ', '_')}).join(' '),
+                                    "to" => (u[k]['new'].map {|l| l['name'].gsub(' ', '_')}).join(' '),
                                 })
             else
               raise "Unknown update: #{k} (#{u[k]})"
@@ -413,6 +405,16 @@ def convert_to_jira(base_uri, login, password, limit=nil)
   end
 
   result
+end
+
+def convert_markup(text)
+  return nil if text.nil?
+  text.gsub!('!', '\!') # escape exclamation marks
+  parser = HTMLToConfluenceParser.new
+  parser.feed(text)
+  text = parser.to_wiki_markup
+  text.gsub!(/%{[^}]+}(.+?)%/m, '\1') # remove buggy percent-tags
+  text
 end
 
 def make_full_name(first_name, last_name)
