@@ -17,7 +17,7 @@ Running dobambam2jira
 
 Run
 ```
-bundle exec ruby dobambam2jira.ru -b https://<yourcompany>.dobambam.com -u <bambam_user_name> -p <bambam_password> > dump.json
+bundle exec ruby dobambam2jira.rb -b https://<yourcompany>.dobambam.com -u <bambam_user_name> -p <bambam_password> > dump.json
 ```
 
 Go into your Jira and import data from JSON-file.
