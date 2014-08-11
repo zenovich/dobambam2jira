@@ -122,6 +122,7 @@ class DoBamBam
     arr = JSON.parse(JSON.parse('{"data": "' + m[1] + '"}')['data'])
     @users = {}
     arr.each {|el| @users[el['id']] = el}
+    @users
   end
 
   def fetch_ticket(project_id, task_id, task_relative_id)
@@ -164,21 +165,20 @@ def download_from_bambam(url, login, password)
   puts tasks['result'].count
 end
 
-def convert_to_jira(base_uri, login, password)
+def convert_to_jira(base_uri, login, password, limit=nil)
   result = {}
   bb = DoBamBam.new(base_uri, login, password)
-  parser = HTMLToConfluenceParser.new
 
   result['users'] = []
   users = bb.users
   if users
-    users.each do |u|
+    users.each do |user_id, u|
       result['users'].append({
         "name" => u['shortName'],
         "groups" => [ "jira-users" ],
         "active" => true,
         "email" => u['email'],
-        "fullname" => u['firstName'] + ' ' + u['lastName']
+        "fullname" => make_full_name(u['firstName'], u['lastName'])
       })
     end
   end
@@ -188,7 +188,7 @@ def convert_to_jira(base_uri, login, password)
  
   if projects
     projects.each do |p|
-      key = p['name'].gsub(/[^a-zA-Z0-9]/, '').upcase
+      key = p['name'].gsub(/[^a-zA-Z0-9]/, '').upcase[0,10]
       project = {
         "name" => p['name'],
         "key" => key,
@@ -197,6 +197,8 @@ def convert_to_jira(base_uri, login, password)
         "components" => [], # No components in DoBamBam
         "issues" => []
       }
+
+      #milestones = Set.new
 
 =begin # Do not export milestones as versions
       $stderr.puts "Fetching milestones for project #{p['name']}"
@@ -212,7 +214,11 @@ def convert_to_jira(base_uri, login, password)
       end
 =end
       $stderr.puts "Fetching tasks for project #{p['name']}"
+      issue_count = 0
       bb.tasks(p['context']['projectId']) do |t|
+        break if limit and issue_count >= limit
+
+        parser = HTMLToConfluenceParser.new
         parser.feed(t['desc'])
         converted_description = parser.to_wiki_markup
 
@@ -231,9 +237,9 @@ def convert_to_jira(base_uri, login, password)
                 'resolution' => is_resolved?(t) ? 'Resolved' : '',
                 'created' => convert_timestamp_to_jira_time(t['created']),
                 'updated' => convert_timestamp_to_jira_time(t['updated']),
-                'dueTime' => convert_timestamp_to_jira_time(t['dueDate']),
-                'originalEstimation' => calc_original_estimation(t),
-                'estimation' => t['estimation'] ? "PT#{t['estimation']}H" : nil,
+                'duedate' => t['dueDate'], # Same format here!
+                'originalEstimate' => calc_original_estimation(t),
+                'estimate' => t['estimation'] ? "PT#{t['estimation']}H" : nil,
                 'affectedVersions' => [], # DoBamBam doesn't provide versions
                 "summary" => "#{t['title']}",
                 'assignee' => t['assignment'].count>0 ? t['assignment'].first['shortName'] : nil,
@@ -247,10 +253,12 @@ def convert_to_jira(base_uri, login, password)
         }
         if t['milestone'] and t['milestone']['name']
           issue['customFieldValues'].append({
-                "fieldName" => "Epic Link",
-                "fieldType" => "com.pyxis.greenhopper.jira:gh-epic-link",
+                "fieldName" => "Milestone",
+                #"fieldType" => "com.pyxis.greenhopper.jira:gh-epic-link",
+                "fieldType" => 'com.atlassian.jira.plugin.system.customfieldtypes:textfield',
                 "value" => t['milestone']['name']
           })
+          #milestones << t['milestone']['name']
         end
 
         t['updates'].each do |u|
@@ -261,9 +269,11 @@ def convert_to_jira(base_uri, login, password)
           }
           u.keys.each do |k|
             if k == 'comment'
+              parser = HTMLToConfluenceParser.new
               parser.feed(u[k])
               converted_comment = parser.to_wiki_markup
 
+              add_nonexistent_user(u['owner'], users, result['users'])
               issue['comments'].append({
                 'body' => converted_comment,
                 'author' => u['owner']['shortName'],
@@ -276,6 +286,9 @@ def convert_to_jira(base_uri, login, password)
             changed = k[0..-7]
             case changed
             when 'assignment'
+              add_nonexistent_user(u[k]['old'].first, users, result['users']) if u[k]['old'].first
+              add_nonexistent_user(u[k]['new'].first, users, result['users']) if u[k]['new'].first
+
               up['items'].append({
                                     "fieldType" => "jira",
                                     "field" => "assignee",
@@ -296,11 +309,11 @@ def convert_to_jira(base_uri, login, password)
             when 'dueDate' 
               up['items'].append({
                                     "fieldType" => "jira",
-                                    "field" => 'dueTime',
-                                    "from" => u[k]['old'],
-                                    #"fromString" => "Open",
-                                    "to" => u[k]['new'],
-                                    #"toString" => "Resolved"
+                                    "field" => 'duedate',
+                                    "from" => convert_timestamp_to_jira_date(u[k]['old']),
+                                    "fromString" => convert_timestamp_to_jira_time(u[k]['old']),
+                                    "to" => convert_timestamp_to_jira_date(u[k]['new']),
+                                    "toString" => convert_timestamp_to_jira_time(u[k]['new'])
                                 })
             when 'priority'
               up['items'].append({
@@ -313,20 +326,22 @@ def convert_to_jira(base_uri, login, password)
                                 })
             when 'milestone'
               up['items'].append({
-                                    "field" => "Epic Link",
-                                    "fieldType" => "com.pyxis.greenhopper.jira:gh-epic-link",
+                                    "field" => "Milestone",
+                                    "fieldType" => "com.atlassian.jira.plugin.system.customfieldtypes:textfield",
+#                                    "fieldType" => "com.pyxis.greenhopper.jira:gh-epic-link",
                                     "from" => u[k]['old'] ? u[k]['old']['name'] : nil,
                                     #"fromString" => "Open",
                                     "to" => u[k]['new'] ? u[k]['new']['name'] : nil,
                                     #"toString" => "Resolved"
                                 })
+              #milestones << u[k]['new']['name'] if u[k]['new']
             when 'estimation' 
               up['items'].append({
                                     "fieldType" => "jira",
-                                    "field" => "estimation",
-                                    "from" => u[k]['old'] ? "PT#{u[k]['old']}H" : nil,
+                                    "field" => "timeestimate",
+                                    "from" => u[k]['old'] ? u[k]['old'].to_i.hours.to_s : nil,
                                     #"fromString" => "Open",
-                                    "to" => u[k]['new'] ? "PT#{u[k]['new']}H" : nil,
+                                    "to" => u[k]['new'] ? u[k]['new'].to_i.hours.to_s : nil,
                                     #"toString" => "Resolved"
                                 })
             when 'attachments'
@@ -358,6 +373,7 @@ def convert_to_jira(base_uri, login, password)
 =begin # Were allready processed as updates
         t['attachmentsUpdate'].each do |a|
           raise "Unknown addType #{a['addType']} in (#{a})" if a['addType'] != 'BY_UPDATE_TICKET'
+          add_nonexistent_user(a['creator'], users, result['users'])
           issue['attachments'].append({
             'name' => a['name'],
             'attacher' => a['creator']['shortName'],
@@ -369,6 +385,7 @@ def convert_to_jira(base_uri, login, password)
 =end
         t['attachmentsAdd'].each do |a|
           raise "Unknown addType #{a['addType']} in (#{a})" if a['addType'] != 'BY_ADD_TICKET'
+          add_nonexistent_user(a['creator'], users, result['users'])
           issue['attachments'].append({
             'name' => a['name'],
             'attacher' => a['creator']['shortName'],
@@ -379,14 +396,43 @@ def convert_to_jira(base_uri, login, password)
         end
 
         project['issues'].append(issue)
-
+        issue_count += 1
       end
+
+=begin
+      milestones.each do |m|
+        project['issues'].append({
+          'issueType' => 'Epic',
+          "summary" => m,
+        })
+      end
+=end
 
       result['projects'].append project
     end
   end
 
   result
+end
+
+def make_full_name(first_name, last_name)
+  fullname = first_name
+  fullname += ' ' if not (fullname.nil? || fullname.empty?) and not (last_name.nil? || last_name.empty?)
+  fullname += last_name if not (last_name.nil? || last_name.empty?)
+  fullname
+end
+
+def add_nonexistent_user(udata, users, result_users)
+  unless users.has_key?(udata['id'])
+    users[udata['id']] = udata
+    result_users.append({
+      "name" => udata['shortName'],
+      "groups" => [ "jira-users" ],
+      "active" => false,
+      "email" => udata['email'],
+      "fullname" => make_full_name(udata['firstName'], udata['lastName'])
+    })
+  end
 end
 
 def select_issue_type_by_labels(labels)
@@ -403,7 +449,7 @@ def calc_original_estimation(ticket)
       break
     end
   end
-  est = "PT#{est}h" if est
+  est = "PT#{est}H" if est
   est
 end
 
@@ -425,10 +471,15 @@ def convert_timestamp_to_jira_time(t)
   DateTime.strptime(t.to_s, '%s').strftime('%Y-%m-%dT%H:%M:%S.%L%z') if t
 end
 
+def convert_timestamp_to_jira_date(t)
+  DateTime.strptime(t.to_s, '%s').strftime('%Y-%m-%d') if t
+end
+
 sl = Slop.new(help: true, strict: true) do
   on 'b', 'base_uri=', 'DoBamBam base URI, i.e https://yourcompany.dobambam.com/', required: true
   on 'u', 'user=', 'DoBamBam user', required: true
   on 'p', 'password=', 'DoBamBam user password', required: true
+  on 'l', 'limit=', 'Limit per-project issues count', optional: true
 end
 
 begin
@@ -439,5 +490,5 @@ rescue
 end
 
 opts = sl.to_hash
-result = convert_to_jira(opts[:base_uri], opts[:user], opts[:password])
-puts result
+result = convert_to_jira(opts[:base_uri], opts[:user], opts[:password], opts[:limit] ? opts[:limit].to_i : nil)
+puts JSON.generate(result)
