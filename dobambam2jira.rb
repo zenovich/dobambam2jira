@@ -165,7 +165,7 @@ def download_from_bambam(url, login, password)
   puts tasks['result'].count
 end
 
-def convert_to_jira(base_uri, login, password, limit=nil)
+def convert_to_jira(base_uri, login, password, limit=nil, map_users={})
   result = {}
   bb = DoBamBam.new(base_uri, login, password)
 
@@ -173,6 +173,8 @@ def convert_to_jira(base_uri, login, password, limit=nil)
   users = bb.users
   if users
     users.each do |user_id, u|
+      next if map_users.has_key?(user_id)
+
       result['users'].append({
         "name" => u['shortName'],
         "groups" => [ "jira-users" ],
@@ -220,15 +222,18 @@ def convert_to_jira(base_uri, login, password, limit=nil)
 
         followers = bb.fetch_ticket_followers(t['id'], p['context']['projectId'])
 
+        add_nonexistent_user(t['opener'], users, result['users'], map_users)
+        add_nonexistent_user(t['assignment'].first, users, result['users'], map_users) if t['assignment'].count>0
+
         issue = {
                 'key' => "#{key}-#{t['relativeId']}",
                 'externalId' => t['relativeId'],
                 'priority' => t['priority']['name'],
                 'description' => convert_markup(t['desc']),
                 'status' => t['status']['name'],
-                'reporter' => t['opener']['shortName'],
+                'reporter' => get_short_name(t['opener'], map_users),
                 'labels' => t['ticketLabels'].map {|l| l['name'].gsub(' ', '_')},
-                'watchers' => followers.map {|f| f['shortName']},
+                'watchers' => followers.map {|f| get_short_name(f, map_users)},
                 'issueType' => select_issue_type_by_labels(t['ticketLabels']), # There are no ticket types in DoBamBam
                 'resolution' => is_resolved?(t) ? 'Resolved' : '',
                 'created' => convert_timestamp_to_jira_time(t['created']),
@@ -238,7 +243,7 @@ def convert_to_jira(base_uri, login, password, limit=nil)
                 'estimate' => t['estimation'] ? "PT#{t['estimation']}H" : nil,
                 'affectedVersions' => [], # DoBamBam doesn't provide versions
                 "summary" => "#{t['title']}",
-                'assignee' => t['assignment'].count>0 ? t['assignment'].first['shortName'] : nil,
+                'assignee' => t['assignment'].count>0 ? get_short_name(t['assignment'].first, map_users) : nil,
                 'fixedVersions' => [], # DoBamBam doesn't provide versions
                 'components' => [], # DoBamBam doesn't provide components
                 'history' => [],
@@ -258,17 +263,17 @@ def convert_to_jira(base_uri, login, password, limit=nil)
         end
 
         t['updates'].each do |u|
+          add_nonexistent_user(u['owner'], users, result['users'], map_users)
           up = {
-            'author' => u['owner']['shortName'],
+            'author' => get_short_name(u['owner'], map_users),
             'created' => convert_timestamp_to_jira_time(u['created']),
             'items' => []
           }
           u.keys.each do |k|
             if k == 'comment'
-              add_nonexistent_user(u['owner'], users, result['users'])
               issue['comments'].append({
                 'body' => convert_markup(u[k]),
-                'author' => u['owner']['shortName'],
+                'author' => get_short_name(u['owner'], map_users),
                 'created' => convert_timestamp_to_jira_time(u['created'])
               })
               next
@@ -278,15 +283,15 @@ def convert_to_jira(base_uri, login, password, limit=nil)
             changed = k[0..-7]
             case changed
             when 'assignment'
-              add_nonexistent_user(u[k]['old'].first, users, result['users']) if u[k]['old'].first
-              add_nonexistent_user(u[k]['new'].first, users, result['users']) if u[k]['new'].first
+              add_nonexistent_user(u[k]['old'].first, users, result['users'], map_users) if u[k]['old'].first
+              add_nonexistent_user(u[k]['new'].first, users, result['users'], map_users) if u[k]['new'].first
 
               up['items'].append({
                                     "fieldType" => "jira",
                                     "field" => "assignee",
-                                    "from" => u[k]['old'].first ? u[k]['old'].first['shortName'] : nil,
+                                    "from" => u[k]['old'].first ? get_short_name(u[k]['old'].first, map_users) : nil,
                                     #"fromString" => "Open",
-                                    "to" => u[k]['new'].first ? u[k]['new'].first['shortName'] : nil,
+                                    "to" => u[k]['new'].first ? get_short_name(u[k]['new'].first, map_users) : nil,
                                     #"toString" => "Resolved"
                                 })
             when 'status' 
@@ -365,10 +370,10 @@ def convert_to_jira(base_uri, login, password, limit=nil)
 =begin # Were allready processed as updates
         t['attachmentsUpdate'].each do |a|
           raise "Unknown addType #{a['addType']} in (#{a})" if a['addType'] != 'BY_UPDATE_TICKET'
-          add_nonexistent_user(a['creator'], users, result['users'])
+          add_nonexistent_user(a['creator'], users, result['users'], map_users)
           issue['attachments'].append({
             'name' => a['name'],
-            'attacher' => a['creator']['shortName'],
+            'attacher' => get_short_name(a['creator'], map_users),
             'created' => convert_timestamp_to_jira_time(a['created']),
             'uri' => bb.fetch_attachment_url(a['hash']),
             'description' => a['title']
@@ -377,10 +382,10 @@ def convert_to_jira(base_uri, login, password, limit=nil)
 =end
         t['attachmentsAdd'].each do |a|
           raise "Unknown addType #{a['addType']} in (#{a})" if a['addType'] != 'BY_ADD_TICKET'
-          add_nonexistent_user(a['creator'], users, result['users'])
+          add_nonexistent_user(a['creator'], users, result['users'], map_users)
           issue['attachments'].append({
             'name' => a['name'],
-            'attacher' => a['creator']['shortName'],
+            'attacher' => get_short_name(a['creator'], map_users),
             'created' => convert_timestamp_to_jira_time(a['created']),
             'uri' => bb.fetch_attachment_url(a['hash']),
             'description' => a['title']
@@ -407,6 +412,11 @@ def convert_to_jira(base_uri, login, password, limit=nil)
   result
 end
 
+def get_short_name(udata, map_users)
+  id = udata['id'].to_i
+  map_users.has_key?(id) ? map_users[id] : udata['shortName']
+end
+
 def convert_markup(text)
   return nil if text.nil?
   text.gsub!('!', '\!') # escape exclamation marks
@@ -424,8 +434,8 @@ def make_full_name(first_name, last_name)
   fullname
 end
 
-def add_nonexistent_user(udata, users, result_users)
-  unless users.has_key?(udata['id'])
+def add_nonexistent_user(udata, users, result_users, map_users)
+  unless users.has_key?(udata['id']) or map_users.has_key?(udata['id'].to_i)
     users[udata['id']] = udata
     result_users.append({
       "name" => udata['shortName'],
@@ -482,15 +492,25 @@ sl = Slop.new(help: true, strict: true) do
   on 'u', 'user=', 'DoBamBam user', required: true
   on 'p', 'password=', 'DoBamBam user password', required: true
   on 'l', 'limit=', 'Limit per-project issues count', optional: true
+  on 'm', 'map_users=', 'Map BamBam users to existing Jira users (format: bambam_user_id:jira_login,...)', as: Array, optional: true 
 end
 
 begin
   sl.parse
+  opts = sl.to_hash
+
+  map_users = {}
+  opts[:map_users].each do |mu|
+    bambam_id, jira_login = mu.split(':')
+    if bambam_id.empty? or jira_login.empty? or (bambam_id = bambam_id.to_i) <= 0
+      raise "Wrong users mapping format"
+    end
+    map_users[bambam_id] = jira_login
+  end if opts[:map_users]
 rescue
   $stderr.puts sl.help
   exit 1
 end
 
-opts = sl.to_hash
-result = convert_to_jira(opts[:base_uri], opts[:user], opts[:password], opts[:limit] ? opts[:limit].to_i : nil)
+result = convert_to_jira(opts[:base_uri], opts[:user], opts[:password], opts[:limit] ? opts[:limit].to_i : nil, map_users)
 puts JSON.generate(result)
