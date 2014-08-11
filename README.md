@@ -1,7 +1,7 @@
 dobambam2jira
 =============
 
-A command-line tool which downloads all your projects hosted on BamBam (dobambam.com).
+A command-line tool which downloads all your projects hosted on BamBam (dobambam.com) and dumps them in Jira-compatible JSON format.
 
 
 Installation
