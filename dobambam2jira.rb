@@ -128,7 +128,8 @@ class DoBamBam
   def fetch_ticket(project_id, task_id, task_relative_id)
     login
     result = RestClient.get("#{@base_uri}ajax/fetch-ticket.html?ticketId=#{task_id}&projectId=#{project_id}&relativeId=#{task_relative_id}",
-                               {cookies: {'SLS2_SESSIDv4' => @session_id}})
+                               {cookies: {'SLS2_SESSIDv4' => @session_id},
+                                verify_ssl: OpenSSL::SSL::VERIFY_NONE})
     JSON.parse(result)['ticket']
   end
 
@@ -136,7 +137,8 @@ class DoBamBam
     login
     result = RestClient.post("#{@base_uri}followers/list",
                             {type: 'TICKET', param: ticket_id, projectId: project_id},
-                            {cookies: {'SLS2_SESSIDv4' => @session_id}})
+                            {cookies: {'SLS2_SESSIDv4' => @session_id},
+                             verify_ssl: OpenSSL::SSL::VERIFY_NONE})
     ids = JSON.parse(result)['result']
     user_info = users
     ids.map {|id| user_info[id]}
@@ -148,7 +150,8 @@ class DoBamBam
 
     login
     result = RestClient.get("#{@base_uri}file/download?fileId=#{h}",
-                            {cookies: {'SLS2_SESSIDv4' => @session_id}}) do |response, request, result, &block|
+                            {cookies: {'SLS2_SESSIDv4' => @session_id},
+                             verify_ssl: OpenSSL::SSL::VERIFY_NONE}) do |response, request, result, &block|
       response
     end
     @attachment_urls[h] = result.headers[:location]
@@ -240,7 +243,7 @@ def convert_to_jira(base_uri, login, password, limit=nil, map_users={})
                 'updated' => convert_timestamp_to_jira_time(t['updated']),
                 'duedate' => t['dueDate'], # Same format here!
                 'originalEstimate' => calc_original_estimation(t),
-                'estimate' => t['estimation'] ? "PT#{t['estimation']}H" : nil,
+                'estimate' => t['estimation'] ? "PT#{t['estimation'].to_i / 60}H" : nil,
                 'affectedVersions' => [], # DoBamBam doesn't provide versions
                 "summary" => "#{t['title']}",
                 'assignee' => t['assignment'].count>0 ? get_short_name(t['assignment'].first, map_users) : nil,
@@ -336,9 +339,9 @@ def convert_to_jira(base_uri, login, password, limit=nil, map_users={})
               up['items'].append({
                                     "fieldType" => "jira",
                                     "field" => "timeestimate",
-                                    "from" => u[k]['old'] ? u[k]['old'].to_i.hours.to_s : nil,
+                                    "from" => u[k]['old'] ? u[k]['old'].to_i / 60 : nil,
                                     #"fromString" => "Open",
-                                    "to" => u[k]['new'] ? u[k]['new'].to_i.hours.to_s : nil,
+                                    "to" => u[k]['new'] ? u[k]['new'].to_i / 60 : nil,
                                     #"toString" => "Resolved"
                                 })
             when 'attachments'
@@ -457,7 +460,7 @@ def calc_original_estimation(ticket)
   ticket['updates'].each do |u|
     next unless u['estimationUpdate']
     if u['estimationUpdate']['old'] and not u['estimationUpdate']
-      est = u['estimationUpdate']['new']
+      est = u['estimationUpdate']['new'].to_i / 60
       break
     end
   end
@@ -480,11 +483,11 @@ def convert_date_to_jira_time(d)
 end
 
 def convert_timestamp_to_jira_time(t)
-  DateTime.strptime(t.to_s, '%s').strftime('%Y-%m-%dT%H:%M:%S.%L%z') if t
+  Time.at(t.to_i).strftime('%Y-%m-%dT%H:%M:%S.%L%z') if t
 end
 
 def convert_timestamp_to_jira_date(t)
-  DateTime.strptime(t.to_s, '%s').strftime('%Y-%m-%d') if t
+  Time.at(t.to_i).strftime('%Y-%m-%d') if t
 end
 
 sl = Slop.new(help: true, strict: true) do
