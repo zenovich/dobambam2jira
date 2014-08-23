@@ -265,6 +265,8 @@ def convert_to_jira(base_uri, login, password, limit=nil, map_users={})
           #milestones << t['milestone']['name']
         end
 
+        attachments = []
+
         t['updates'].each do |u|
           add_nonexistent_user(u['owner'], users, result['users'], map_users)
           up = {
@@ -348,12 +350,18 @@ def convert_to_jira(base_uri, login, password, limit=nil, map_users={})
               raise "Unknown attachmentsUpdate type '#{u[k][type]}' in (u[k])" unless u[k]['type'] == 'ADDED'
               u[k]['attachments'].each do |a|
                 raise "Unknown addType for attachment '#{a['addType']}' in (#{a})" unless a['addType'] == 'BY_UPDATE_TICKET'
+                att_url = bb.fetch_attachment_url(a['hash'])
                 up['items'].append({
                                     "fieldType" => "jira",
                                     "field" => "Attachment",
                                     'from' => nil,
-                                    "fromString" => '',
-                                    "toString" => bb.fetch_attachment_url(a['hash']),
+                                    "to" => a['name'],
+                                  })
+                                  attachments.append({
+                                    'name' => a['name'],
+                                    'attacher' => get_short_name(u['owner'], map_users),
+                                    'created' => convert_timestamp_to_jira_time(u['created']),
+                                    'uri' => att_url,
                                   })
               end
             when 'labels' 
@@ -394,6 +402,7 @@ def convert_to_jira(base_uri, login, password, limit=nil, map_users={})
             'description' => a['title']
           })
         end
+        issue['attachments'] += attachments
 
         project['issues'].append(issue)
         issue_count += 1
@@ -516,4 +525,4 @@ rescue
 end
 
 result = convert_to_jira(opts[:base_uri], opts[:user], opts[:password], opts[:limit] ? opts[:limit].to_i : nil, map_users)
-puts JSON.generate(result)
+puts JSON.pretty_generate(result)
