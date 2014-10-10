@@ -23,7 +23,7 @@ class DoBamBam
       @session_id = result.cookies['SLS2_SESSIDv4']
     end
   end
-  
+
 =begin
   def milestones(project_id)
     return @milestones[project_id] if @milestones && @milestones.has_key?(project_id)
@@ -77,7 +77,7 @@ class DoBamBam
     data = JSON.parse(result)
 
     @project_tasks ||= {}
-    
+
     result = {}
     data['result'].each do |t|
       ticket = fetch_ticket(project_id, t['id'], t['relativeId'])
@@ -232,7 +232,7 @@ def convert_to_jira(base_uri, login, password, limit=nil, map_users={})
                 'key' => "#{key}-#{t['relativeId']}",
                 'externalId' => t['relativeId'],
                 'priority' => t['priority']['name'],
-                'description' => convert_markup(t['desc']),
+                'description' => convert_markup(t['desc'], key),
                 'status' => t['status']['name'],
                 'reporter' => get_short_name(t['opener'], map_users),
                 'labels' => t['ticketLabels'].map {|l| l['name'].gsub(' ', '_')},
@@ -277,7 +277,7 @@ def convert_to_jira(base_uri, login, password, limit=nil, map_users={})
           u.keys.each do |k|
             if k == 'comment'
               issue['comments'].append({
-                'body' => convert_markup(u[k]),
+                'body' => convert_markup(u[k], key),
                 'author' => get_short_name(u['owner'], map_users),
                 'created' => convert_timestamp_to_jira_time(u['created'])
               })
@@ -429,13 +429,19 @@ def get_short_name(udata, map_users)
   map_users.has_key?(id) ? map_users[id] : udata['shortName']
 end
 
-def convert_markup(text)
+def convert_markup(text, project_key)
   return nil if text.nil?
-  text.gsub!('!', '\!') # escape exclamation marks
+  found_links = false
+  text.gsub! /\<bl cid="(?<id>\d+)" type="(?<type>[^"]+)" pid="\d+" hash="[\da-z]+" label="[^"]*">#\k<id> - .*?\<\/bl>/m do |match|
+    raise "Unknown link type: #{$2}" if $2 != 'TICKET'
+    found_links = true
+    "```TICKETLINK#{$1}TICKETLINK```"
+  end
   parser = HTMLToConfluenceParser.new
   parser.feed(text)
   text = parser.to_wiki_markup
   text.gsub!(/%{[^}]+}(.+?)%/m, '\1') # remove buggy percent-tags
+  text.gsub!(/```TICKETLINK(\d+)TICKETLINK```/m, "##{project_key}-\\1") if found_links
   text
 end
 
